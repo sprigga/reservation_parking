@@ -2,18 +2,44 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 
+# ---- Users ----
+class UserBase(BaseModel):
+    username: str = Field(..., max_length=50)
+
+class UserRead(UserBase):
+    id: int
+    is_admin: bool
+    is_active: bool
+    class Config:
+        from_attributes = True
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+# ---- Parking Spots ----
 class ParkingSpotBase(BaseModel):
     spot_number: str = Field(..., max_length=32)
 
 class ParkingSpotCreate(ParkingSpotBase):
-    pass
+    active: bool = True
+
+class ParkingSpotUpdate(BaseModel):
+    spot_number: Optional[str] = Field(None, max_length=32)
+    active: Optional[bool] = None
 
 class ParkingSpotRead(ParkingSpotBase):
     id: int
+    active: bool
 
     class Config:
         from_attributes = True
 
+# ---- Reservations ----
 class ReservationBase(BaseModel):
     name: str = Field(..., max_length=64)
     household: str = Field(..., max_length=64)
