@@ -10,9 +10,41 @@
 - 1.5 需具備管理者模式，可取消已預約之車位號碼時間點。
 
 ## 2. 技術棧
-- 前端：Vue
-- 後端：FastAPI
+- 前端：Vue (Vite)
+- 後端：FastAPI (SQLAlchemy)
 - 資料庫：MySQL
+
+### 專案目錄結構
+```
+reservation_parking/
+├── backend/
+│   ├── app/
+│   │   ├── api.py            # API 路由：車位/預約 CRUD、重疊檢查
+│   │   ├── database.py       # 連線與 Session 管理
+│   │   ├── main.py           # FastAPI 入口與 CORS 設定
+│   │   ├── models.py         # SQLAlchemy 模型 (ParkingSpot, Reservation)
+│   │   └── schemas.py        # Pydantic Schemas
+│   ├── .env.example
+│   └── requirements.txt
+├── database/
+│   └── schema.sql            # MySQL 建表與初始資料（含 A-01 ~ A-05）
+└── frontend/
+    ├── index.html
+    ├── package.json
+    ├── vite.config.js
+    └── src/
+        ├── api.js
+        ├── App.vue
+        ├── main.js
+        └── pages/
+            ├── Admin.vue
+            └── ReservationForm.vue
+```
+
+### 重疊判斷（應用層）
+預約時間不可重疊，於建立預約時執行：
+- 條件：(new_start < existing_end) AND (new_end > existing_start)
+- 若符合則回應 409 並禁止建立。
 
 ## 3. Git 初始化
 此專案需使用 Git 進行版本控管。可依下列步驟初始化：
