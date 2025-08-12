@@ -28,6 +28,9 @@ services:
     environment:
       - DATABASE_URL=mysql+pymysql://root:${DB_ROOT_PASSWORD:-password}@db:3306/${MYSQL_DATABASE:-reservation_parking}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173}
+      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
       - TZ=${TZ:-Asia/Taipei}
     volumes:
       - ./backend:/app
