@@ -43,7 +43,9 @@ uvicorn app.main:app --reload --port 8000
 # Frontend
 cd frontend
 npm install
-npm run dev
+npm run dev        # Development server
+npm run build      # Production build
+npm run preview    # Preview production build
 ```
 
 ### Testing & Verification
@@ -56,8 +58,11 @@ curl -X POST http://localhost:8000/auth/login \
      -H 'Content-Type: application/x-www-form-urlencoded' \
      -d 'username=admin&password=admin123'
 
-# Check database (SQLite)
-docker exec -it rp_backend sqlite3 reservation_parking.db "SELECT name FROM sqlite_master WHERE type='table'; SELECT * FROM parking_spots;"
+# Check database (SQLite) - using specific container name
+docker exec -it rp_backend sqlite3 /app/reservation_parking.db "SELECT name FROM sqlite_master WHERE type='table'; SELECT * FROM parking_spots;"
+
+# Debug container logs
+docker compose logs -f rp_backend rp_frontend
 ```
 
 ## Architecture
@@ -93,7 +98,15 @@ SECRET_KEY=change-this-in-production
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=admin123
 CORS_ORIGINS=http://localhost:5173
+VITE_API_BASE=http://localhost:8000
+TZ=Asia/Taipei
+BACKEND_PORT=8000
+FRONTEND_PORT=5173
 ```
+
+**Container names:**
+- Backend: `rp_backend`
+- Frontend: `rp_frontend`
 
 **Default ports:**
 - Frontend: 5173
