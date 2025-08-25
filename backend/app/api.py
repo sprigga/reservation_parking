@@ -1,16 +1,33 @@
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, delete
 
 from .database import get_db
 from . import models, schemas
 from .auth import create_access_token, verify_password, get_current_user, require_admin
 
 router = APIRouter()
+
+# -------- Helper Functions --------
+def cleanup_expired_reservations(db: Session):
+    """清理超過8小時的過期預約紀錄"""
+    cutoff_time = datetime.utcnow() - timedelta(hours=8)
+    
+    # 刪除結束時間超過8小時的預約
+    result = db.execute(
+        delete(models.Reservation).where(models.Reservation.end_time < cutoff_time)
+    )
+    
+    deleted_count = result.rowcount
+    if deleted_count > 0:
+        db.commit()
+        print(f"Cleaned up {deleted_count} expired reservations")
+    
+    return deleted_count
 
 # -------- Auth --------
 @router.post("/auth/login", response_model=schemas.TokenResponse)
@@ -76,6 +93,9 @@ def list_reservations(
     spot_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
+    # 在獲取預約列表時自動清理過期預約
+    cleanup_expired_reservations(db)
+    
     stmt = select(models.Reservation)
     if spot_id is not None:
         stmt = stmt.where(models.Reservation.spot_id == spot_id)
@@ -85,6 +105,9 @@ def list_reservations(
 
 @router.post("/reservations", response_model=schemas.ReservationRead, status_code=status.HTTP_201_CREATED)
 def create_reservation(payload: schemas.ReservationCreate, db: Session = Depends(get_db)):
+    # 在創建新預約時自動清理過期預約
+    cleanup_expired_reservations(db)
+    
     spot = db.execute(select(models.ParkingSpot).where(models.ParkingSpot.id == payload.spot_id)).scalar_one_or_none()
     if not spot:
         raise HTTPException(status_code=404, detail="Parking spot not found")
@@ -125,3 +148,9 @@ def delete_reservation(reservation_id: int, db: Session = Depends(get_db)):
     db.delete(obj)
     db.commit()
     return None
+
+@router.post("/reservations/cleanup", dependencies=[Depends(require_admin)])
+def manual_cleanup_reservations(db: Session = Depends(get_db)):
+    """管理員手動清理過期預約紀錄"""
+    deleted_count = cleanup_expired_reservations(db)
+    return {"message": f"Cleaned up {deleted_count} expired reservations", "deleted_count": deleted_count}

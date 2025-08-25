@@ -1,230 +1,408 @@
-# 正式部署指南（Nginx 反向代理 + HTTPS）
+# 部署指南
 
-本指南說明如何在生產環境使用 Docker Compose、Nginx 反向代理與 Let's Encrypt（certbot）提供 HTTPS，並以 Nginx 提供前端靜態檔案與反向代理後端 API。
+本指南說明如何部署社區停車位預約系統到生產環境。
 
-## 0. 前置準備
-- 一個可公開訪問的主機（Linux）
-- 一個網域名稱（假設為 `example.com`），DNS A 記錄已指向該主機
-- 防火牆開放 80 與 443（以及若需 SSH：22）
+## 系統架構
 
-## 1. 目標拓樸
-- Nginx（:80, :443）
-  - 靜態檔案（Vue build 後的 `dist`）直接由 Nginx 提供
-  - 反向代理 `/api/` 至 FastAPI （內網連線，不對外開放）
-- FastAPI（:8000 容器內）
-  - 僅在 Docker network 內被 Nginx 訪問
-  - 移除 --reload，改為生產模式（可考慮增加 workers）
-- MySQL（內網，不對外開放）
+- **後端**: FastAPI + SQLAlchemy + SQLite
+- **前端**: Vue 3 + Vite  
+- **部署**: Docker Compose
+- **反向代理**: Nginx (生產環境)
+- **SSL**: Let's Encrypt
 
-## 2. 生產用環境變數
-請根據實際情況設定 `reservation_parking/.env`（可由 `.env.example` 複製）：
+## 開發環境部署
 
+### 1. 環境準備
+
+確保系統已安裝：
+- Docker & Docker Compose
+- Git
+
+### 2. 克隆專案
+
+```bash
+git clone <repository-url>
+cd reservation_parking
 ```
-# 只給容器內互連，不外露 DB 埠（不指定 DB_PORT 對外綁定）
-DB_ROOT_PASSWORD=your-strong-password
-MYSQL_DATABASE=reservation_parking
 
-# 後端 API 內部埠（Nginx 透過內網連至 backend:8000）
+### 3. 環境變數設定
+
+複製環境變數範本：
+```bash
+cp .env.example .env
+```
+
+產生安全的 SECRET_KEY：
+```bash
+# 產生 32 位元組的隨機密鑰
+openssl rand -hex 32
+
+# 或者直接寫入 .env 檔案
+echo "SECRET_KEY=$(openssl rand -hex 32)" >> .env
+```
+
+編輯 `.env` 檔案：
+```bash
+# 後端與前端埠號
 BACKEND_PORT=8000
+FRONTEND_PORT=5173
 
-# 允許的前端來源請改為你的正式域名
-CORS_ORIGINS=https://example.com
+# CORS 設定 (開發環境)
+CORS_ORIGINS=http://localhost:5173
 
-# JWT 與預設管理者
-SECRET_KEY=please-change-in-production
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=please-change
+# 前端 API 基礎路徑
+VITE_API_BASE=http://localhost:8000
 
 # 時區
 TZ=Asia/Taipei
+
+# 後端認證設定 (建議產生安全的 SECRET_KEY)
+SECRET_KEY=change-this-in-production  # 或使用: $(openssl rand -hex 32)
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=admin123
 ```
 
-## 3. 以 /api 作為前端的 API Base（同源）
-生產時建議讓前端呼叫同一網域下的 `/api`，避免 CORS 問題。
-- 在 `frontend/.env.production` 設定：
-  ```
-  VITE_API_BASE=/api
-  ```
-- 之後執行打包（下一節）。
+### 4. 啟動服務
 
-## 4. 建置前端靜態檔
-在主機上（或 CI/CD）執行：
 ```bash
-cd reservation_parking/frontend
+# 建置並啟動所有服務
+docker compose up -d --build
+
+# 查看服務狀態
+docker compose ps
+
+# 查看日誌
+docker compose logs -f
+```
+
+### 5. 驗證部署
+
+```bash
+# 後端健康檢查
+curl http://localhost:8000/health
+
+# 管理員登入測試
+curl -X POST http://localhost:8000/auth/login \
+     -H 'Content-Type: application/x-www-form-urlencoded' \
+     -d 'username=admin&password=admin123'
+```
+
+前端訪問：http://localhost:5173
+
+## 生產環境部署
+
+### 1. 生產環境變數
+
+建立生產環境 `.env`：
+```bash
+# 生產埠號 (內部使用，透過 Nginx 反向代理)
+BACKEND_PORT=8000
+FRONTEND_PORT=5173
+
+# CORS 設定 (改為你的域名)
+CORS_ORIGINS=https://your-domain.com
+
+# 前端 API 基礎路徑 (同域名下)
+VITE_API_BASE=/api
+
+# 時區
+TZ=Asia/Taipei
+
+# 重要：生產環境請更換這些密鑰
+
+# 產生安全的 SECRET_KEY
+SECRET_KEY=$(openssl rand -hex 32)
+ADMIN_USERNAME=your-admin-username
+ADMIN_PASSWORD=your-strong-password
+```
+
+### 2. 前端建置
+
+```bash
+cd frontend
+
+# 建立生產環境變數
+echo "VITE_API_BASE=/api" > .env.production
+
+# 安裝依賴並建置
 npm ci
 npm run build
-# 產物在 frontend/dist
+
+# 建置產物位於 frontend/dist
 ```
 
-## 5. Nginx 設定
-範例檔位於 `reservation_parking/deploy/nginx/conf.d/reservation_parking.conf`（需將 `example.com` 改為你的域名）。
-- HTTP（80）先提供 ACME 驗證與 HTTP -> HTTPS 轉址
-- HTTPS（443）提供靜態網站與反向代理 /api
+### 3. 生產版 Docker Compose
 
-```
-# /etc/nginx/conf.d/reservation_parking.conf
-
-# 1) HTTP - 轉址到 HTTPS，並保留 ACME 驗證
-server {
-    listen 80;
-    server_name example.com;
-
-    location /.well-known/acme-challenge/ {
-        root /usr/share/nginx/html; # Nginx 靜態根目錄
-    }
-
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
-
-# 2) HTTPS - 提供靜態與反向代理 API
-server {
-    listen 443 ssl http2;
-    server_name example.com;
-
-    ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
-    ssl_trusted_certificate /etc/letsencrypt/live/example.com/chain.pem;
-
-    # 靜態檔
-    root /usr/share/nginx/html;
-    index index.html;
-
-    # 前端 SPA：路由交由前端處理
-    location / {
-        try_files $uri /index.html;
-        add_header Cache-Control "public, max-age=3600";
-    }
-
-    # 反向代理 FastAPI
-    location /api/ {
-        proxy_pass http://rp_backend:8000/; # 注意尾端斜線
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-## 6. 生產版 docker-compose（範例）
-檔案：`reservation_parking/deploy/docker-compose.prod.yml`
-
-- 不對外暴露 MySQL 與 Backend 的埠（只讓 Nginx 連）
-- Nginx 綁 80/443，掛載 `frontend/dist` 與證書路徑
+建立 `docker-compose.prod.yml`：
 
 ```yaml
 services:
-  db:
-    image: mysql:8.0
-    environment:
-      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
-      - MYSQL_DATABASE=${MYSQL_DATABASE}
-      - TZ=${TZ:-Asia/Taipei}
-    volumes:
-      - db_data:/var/lib/mysql
-      - ../database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -p$${MYSQL_ROOT_PASSWORD} || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-
+  # 後端 API (內網連線，不對外開放)
   backend:
     build:
-      context: ../backend
+      context: ./backend
       dockerfile: Dockerfile
+    container_name: rp_backend_prod
     environment:
-      - DATABASE_URL=mysql+pymysql://root:${DB_ROOT_PASSWORD}@db:3306/${MYSQL_DATABASE}
+      - DATABASE_URL=sqlite:///./reservation_parking.db
       - CORS_ORIGINS=${CORS_ORIGINS}
       - SECRET_KEY=${SECRET_KEY}
       - ADMIN_USERNAME=${ADMIN_USERNAME}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - TZ=${TZ:-Asia/Taipei}
-    depends_on:
-      db:
-        condition: service_healthy
-    # 不對外開放，僅供 Nginx 內網連線
+    volumes:
+      - sqlite_data:/app/data
+      - ./backend/reservation_parking.db:/app/reservation_parking.db
+    restart: unless-stopped
+    # 不對外開放埠號，僅供 Nginx 內網連線
 
+  # Nginx 反向代理 + 靜態檔案伺服
   nginx:
     image: nginx:alpine
+    container_name: rp_nginx
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      # 前端打包後的靜態檔案（請先完成第 4 節 build）
-      - ../frontend/dist:/usr/share/nginx/html:ro
-      # Nginx 站台設定
-      - ./nginx/conf.d/reservation_parking.conf:/etc/nginx/conf.d/default.conf:ro
-      # Let's Encrypt 證書與憑證
+      # 前端靜態檔案
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      # Nginx 設定
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Let's Encrypt 憑證 (如需 HTTPS)
       - /etc/letsencrypt:/etc/letsencrypt:ro
     depends_on:
       - backend
+    restart: unless-stopped
 
 volumes:
-  db_data:
+  sqlite_data:
 ```
 
-啟動：
-```bash
-cd reservation_parking/deploy
-# 先打包前端（若尚未）
-( cd ../frontend && npm ci && npm run build )
-# 啟動
-docker compose -f docker-compose.prod.yml up -d --build
+### 4. Nginx 設定
+
+建立 `nginx.conf`：
+
+```nginx
+# HTTP 伺服器 (重新導向到 HTTPS 或僅用於開發)
+server {
+    listen 80;
+    server_name your-domain.com;
+
+    # Let's Encrypt ACME 挑戰
+    location /.well-known/acme-challenge/ {
+        root /usr/share/nginx/html;
+    }
+
+    # 重新導向到 HTTPS (生產環境)
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# HTTPS 伺服器 (生產環境)
+server {
+    listen 443 ssl http2;
+    server_name your-domain.com;
+
+    # SSL 憑證 (使用 Let's Encrypt)
+    ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/your-domain.com/chain.pem;
+
+    # SSL 設定
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    # 前端靜態檔案
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Vue.js SPA 路由支援
+    location / {
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # 反向代理到後端 API
+    location /api/ {
+        proxy_pass http://backend:8000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # CORS headers (如果需要)
+        add_header Access-Control-Allow-Origin $http_origin always;
+        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+        
+        if ($request_method = 'OPTIONS') {
+            return 204;
+        }
+    }
+
+    # 安全標頭
+    add_header X-Frame-Options DENY;
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection "1; mode=block";
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+}
 ```
 
-## 7. 申請與安裝 Let's Encrypt 憑證
-方式 A：使用 certbot standalone（暫時停用 Nginx 80 埠）
-```bash
-# 暫時停用 Nginx
-docker compose -f reservation_parking/deploy/docker-compose.prod.yml stop nginx
+### 5. SSL 憑證申請 (Let's Encrypt)
 
-# 以 standalone 在 80 取得憑證（請替換網域與 email）
+```bash
+# 方法 1: Standalone (需暫停 Nginx)
+docker compose -f docker-compose.prod.yml stop nginx
+
 sudo docker run --rm -it \
   -p 80:80 \
   -v /etc/letsencrypt:/etc/letsencrypt \
   -v /var/lib/letsencrypt:/var/lib/letsencrypt \
   certbot/certbot certonly --standalone \
-  -d example.com --email admin@example.com --agree-tos --no-eff-email
+  -d your-domain.com \
+  --email your-email@domain.com \
+  --agree-tos --no-eff-email
 
-# 啟動 Nginx 並使用憑證
-docker compose -f reservation_parking/deploy/docker-compose.prod.yml up -d nginx
-```
+docker compose -f docker-compose.prod.yml up -d nginx
 
-方式 B：使用 webroot（不需停 Nginx，需先設定 80 站點的 `/.well-known/acme-challenge/` 路由）
-```bash
+# 方法 2: Webroot (不需停止服務)
 sudo docker run --rm -it \
   -v /etc/letsencrypt:/etc/letsencrypt \
   -v /var/lib/letsencrypt:/var/lib/letsencrypt \
+  -v $(pwd)/frontend/dist:/usr/share/nginx/html \
   certbot/certbot certonly --webroot \
-  -w /usr/share/nginx/html -d example.com \
-  --email admin@example.com --agree-tos --no-eff-email
-
-# 重新載入 Nginx
-docker exec $(docker ps -q -f name=nginx) nginx -s reload || true
+  -w /usr/share/nginx/html \
+  -d your-domain.com \
+  --email your-email@domain.com \
+  --agree-tos --no-eff-email
 ```
 
-憑證續期（建議以 cron 執行）：
+### 6. 憑證自動更新
+
+建立 crontab 任務：
 ```bash
-sudo docker run --rm \
-  -v /etc/letsencrypt:/etc/letsencrypt \
-  -v /var/lib/letsencrypt:/var/lib/letsencrypt \
-  certbot/certbot renew --quiet --no-self-upgrade
+# 編輯 crontab
+sudo crontab -e
 
-# 續期後重載 Nginx
-docker exec $(docker ps -q -f name=nginx) nginx -s reload || true
+# 新增以下行 (每日 2:30 檢查更新)
+30 2 * * * docker run --rm -v /etc/letsencrypt:/etc/letsencrypt -v /var/lib/letsencrypt:/var/lib/letsencrypt certbot/certbot renew --quiet && docker exec rp_nginx nginx -s reload
 ```
 
-## 8. 其他建議
-- 安全性：
-  - 請務必更改 `SECRET_KEY`、`ADMIN_PASSWORD`。
-  - 若無需對外提供 MySQL，請勿在生產 compose 暴露其埠。
-- FastAPI：可視硬體資源調整 uvicorn workers，或改用 `gunicorn -k uvicorn.workers.UvicornWorker`。
-- 監控/日誌：可搭配 nginx/access.log、error.log，與後端應用層日誌。
-- 前端快取：若需更長快取策略，可針對 assets 設置更高 max-age 並使用指紋檔名（Vite 預設已指紋化）。
+### 7. 啟動生產環境
 
----
-若你希望我將本指南對應的 `docker-compose.prod.yml` 與 nginx.conf 範例一起提交並套用你的域名，請提供 domain 與 email，我可以直接替你產出可用的設定檔並驗證部署。
+```bash
+# 確保前端已建置
+cd frontend && npm run build && cd ..
+
+# 啟動生產服務
+docker compose -f docker-compose.prod.yml up -d --build
+
+# 查看狀態
+docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml logs -f
+```
+
+## 資料庫管理
+
+### 備份 SQLite 資料庫
+
+```bash
+# 備份資料庫
+docker exec rp_backend_prod sqlite3 /app/reservation_parking.db ".backup /app/backup.db"
+
+# 複製備份到主機
+docker cp rp_backend_prod:/app/backup.db ./backup-$(date +%Y%m%d).db
+```
+
+### 查看資料庫內容
+
+```bash
+# 進入容器
+docker exec -it rp_backend_prod sqlite3 /app/reservation_parking.db
+
+# SQLite 指令
+.tables                    # 列出所有表
+.schema                    # 顯示表結構
+SELECT * FROM parking_spots;    # 查看車位
+SELECT * FROM reservations;     # 查看預約記錄
+.quit                      # 退出
+```
+
+## 監控與維護
+
+### 日誌查看
+
+```bash
+# 查看所有服務日誌
+docker compose -f docker-compose.prod.yml logs -f
+
+# 查看特定服務日誌
+docker compose -f docker-compose.prod.yml logs -f backend
+docker compose -f docker-compose.prod.yml logs -f nginx
+```
+
+### 健康檢查
+
+```bash
+# 後端 API 健康檢查
+curl https://your-domain.com/api/health
+
+# 前端訪問檢查
+curl -I https://your-domain.com
+```
+
+### 服務重啟
+
+```bash
+# 重啟特定服務
+docker compose -f docker-compose.prod.yml restart backend
+docker compose -f docker-compose.prod.yml restart nginx
+
+# 重啟所有服務
+docker compose -f docker-compose.prod.yml restart
+```
+
+## 安全建議
+
+1. **更換預設密碼**: 務必更改 `SECRET_KEY`、`ADMIN_PASSWORD`
+2. **防火牆設定**: 僅開放必要埠號 (80, 443, SSH)
+3. **定期更新**: 定期更新 Docker images 和依賴套件
+4. **備份策略**: 定期備份 SQLite 資料庫和設定檔案
+5. **監控日誌**: 定期檢查 access.log 和 error.log
+
+## 故障排除
+
+### 後端無法啟動
+```bash
+# 檢查後端日誌
+docker compose logs backend
+
+# 檢查資料庫檔案權限
+docker exec -it rp_backend ls -la /app/
+
+# 重建容器
+docker compose down && docker compose up -d --build
+```
+
+### 前端無法訪問 API
+```bash
+# 檢查 Nginx 設定
+docker exec rp_nginx nginx -t
+
+# 重新載入 Nginx 設定
+docker exec rp_nginx nginx -s reload
+
+# 檢查網路連線
+docker exec rp_nginx ping backend
+```
+
+### SSL 憑證問題
+```bash
+# 檢查憑證到期時間
+sudo docker run --rm -v /etc/letsencrypt:/etc/letsencrypt certbot/certbot certificates
+
+# 手動更新憑證
+sudo docker run --rm -v /etc/letsencrypt:/etc/letsencrypt certbot/certbot renew --force-renewal
+```

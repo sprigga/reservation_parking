@@ -3,16 +3,28 @@
 本文件彙整系統需求與啟動手冊，供開發與部署參考。
 
 ## 1. 系統目標與功能
-- 1.1 畫面欄位：姓名、戶別、手機、預約車位號碼、預約時間起迄。
-- 1.2 預約車位號碼以下拉式選單呈現，車位號碼由資料庫管理。
-- 1.3 若相同車位之預約時間有重疊，需跳出警告並禁止預約。
-- 1.4 畫面需顯示目前已被預約之車位號碼的各時間點供參考。
-- 1.5 需具備管理者模式，可取消已預約之車位號碼時間點，並進行車位管理（新增/編輯/啟用或停用）。
+
+### 1.1 預約功能
+- **表單欄位**：姓名、戶別、手機號碼、預約車位號碼、預約起迄時間
+- **車位選擇**：下拉式選單顯示可用車位，由資料庫動態管理
+- **時間衝突防護**：自動檢測並阻止重疊時間的預約申請
+- **智能時間選擇**：
+  - 30分鐘時間粒度（00:00、00:30、01:00...）
+  - 預設開始時間為下一個30分鐘整點
+  - 結束日期自動同步開始日期，防止跨天預約
+  - 即時顯示已被預約的時間段（灰色禁用）
+- **預約狀況展示**：實時顯示所有當前預約，按時間排序
+
+### 1.2 管理者功能
+- **安全登入**：JWT token 驗證的管理員系統
+- **車位管理**：新增車位、編輯車位號碼、啟用/停用車位
+- **預約管理**：查看所有預約、取消特定預約
+- **系統維護**：自動清理過期預約（結束時間超過8小時）
 
 ## 2. 技術棧
-- 前端：Vue (Vite)
-- 後端：FastAPI (SQLAlchemy)
-- 資料庫：MySQL
+- 前端：Vue 3 + Vite + Axios
+- 後端：FastAPI + SQLAlchemy + SQLite
+- 部署：Docker Compose
 
 ### 專案目錄結構
 ```
@@ -27,10 +39,9 @@ reservation_parking/
 │   │   └── schemas.py        # Pydantic Schemas
 │   ├── .env.example
 │   └── requirements.txt
-├── database/
-│   └── schema.sql            # MySQL 建表與初始資料（含 A-01 ~ A-05、users 表）
-├── docker-compose.yml        # MySQL + FastAPI + Vite 一鍵啟動
+├── docker-compose.yml        # SQLite + FastAPI + Vite 一鍵啟動
 ├── .env.example              # compose 用的環境變數範例
+├── DEPLOYMENT.md             # 完整部署指南（含生產環境 Nginx + SSL）
 └── frontend/
     ├── index.html
     ├── package.json
@@ -45,10 +56,16 @@ reservation_parking/
             └── ReservationForm.vue  # 一般使用者預約表單
 ```
 
-### 重疊判斷（應用層）
-預約時間不可重疊，於建立預約時執行：
-- 條件：(new_start < existing_end) AND (new_end > existing_start)
-- 若符合則回應 409 並禁止建立。
+### 重疊判斷與智能檢測
+**後端驗證**：
+- 條件：`(new_start < existing_end) AND (new_end > existing_start)`
+- 若時間衝突則回應 409 狀態碼並阻止建立
+
+**前端智能防護**：
+- 即時檢測時間段是否已被預約
+- 自動禁用（灰色顯示）已預約的時間選項
+- 合併重疊時間段，計算完整被預約的日期
+- 當選擇車位或日期變動時，自動清除無效的時間選擇
 
 ## 3. Git 初始化（僅供參考）
 ```bash
@@ -73,13 +90,22 @@ git commit -m "chore: initialize reservation_parking project"
 cd reservation_parking
 cp .env.example .env
 ```
+
+產生安全的 SECRET_KEY：
+```bash
+# 產生 32 位元組的隨機密鑰
+openssl rand -hex 32
+
+# 或者直接寫入 .env 檔案
+echo "SECRET_KEY=$(openssl rand -hex 32)" >> .env
+```
+
 .env 重要變數：
-- DB_ROOT_PASSWORD：MySQL root 密碼（預設 password）
-- MYSQL_DATABASE：資料庫名稱（預設 reservation_parking）
-- DB_PORT：對外映射的 MySQL 埠（預設 3306；若本機已占用，改成 3307）
 - BACKEND_PORT、FRONTEND_PORT：後端/前端對外埠（預設 8000 / 5173）
 - CORS_ORIGINS：前端來源（預設 http://localhost:5173）
-- SECRET_KEY：JWT 簽章密鑰（請務必在正式環境修改）
+- VITE_API_BASE：前端 API 基礎路徑（預設 http://localhost:8000）
+- TZ：時區設定（預設 Asia/Taipei）
+- SECRET_KEY：JWT 簽章密鑰（請務必更換為安全密鑰）
 - ADMIN_USERNAME / ADMIN_PASSWORD：預設管理者帳密（啟動時建立）
 
 2) 啟動服務
@@ -87,43 +113,88 @@ cp .env.example .env
 docker compose up -d --build
 # 查看狀態
 docker compose ps
+# 查看日誌
+docker compose logs -f
 # 查看後端健康檢查
 curl http://localhost:${BACKEND_PORT:-8000}/health
 ```
 預設網址：
 - Frontend: http://localhost:5173
 - Backend health: http://localhost:8000/health
-- MySQL: 127.0.0.1:${DB_PORT}（root / $DB_ROOT_PASSWORD）
+- SQLite 資料庫：儲存在容器內 `/app/reservation_parking.db`
 
 3) 首次資料庫初始化
-- docker-compose 會自動匯入 `database/schema.sql` 建立資料表與預設車位（A-01 ~ A-05）。
-- 後端啟動時若找不到 `ADMIN_USERNAME` 對應帳號，會自動建立管理者。
+- 後端啟動時會自動建立 SQLite 資料庫與資料表。
+- 自動建立預設車位（A-01 ~ A-05）及管理者帳號。
+- 過期預約會在啟動時自動清理。
 
-## 5. 預約時間選擇（24h、30 分鐘粒度）
-前端（ReservationForm.vue）已將時間挑選改為「日期 + 時分下拉」的 24 小時制，分鐘以 30 分鐘為一個基本單位：
-- 時間選單內容為 00:00、00:30、01:00、01:30 ... 23:30。
-- 預設會自動將開始時間設為「下一個 30 分鐘整點」，結束時間則為開始時間 +30 分鐘。
-- 當使用者變更「預約開始日期」時，系統會自動同步將「預約結束日期」改為相同日期，避免跨天錯誤。
-- 送出前前端會先檢查：結束時間需晚於開始時間。
+## 5. 智能時間選擇系統
 
-## 6. 管理者登入與權限
-- 前端管理者區塊（Admin.vue）預設顯示登入表單。
-- 預設帳密：
-  - 帳號：admin
-  - 密碼：admin123
-- 登入成功後可進行：
-  - 車位管理：新增/編輯/啟用或停用。
-  - 預約管理：刪除既有預約。
-- 受保護 API（如新增/修改車位、刪除預約）僅管理者可操作。
+### 5.1 時間格式與粒度
+- **24小時制**：採用 24 小時格式，避免 AM/PM 混淆
+- **30分鐘粒度**：時間選項為 00:00、00:30、01:00、01:30 ... 23:30
+- **自動預設**：開始時間自動設為下一個 30 分鐘整點
+- **預設時長**：結束時間預設為開始時間 +30 分鐘
 
-## 6. 常見問題與除錯指南（本專案實測）
-1) MySQL 埠衝突
-- 現象：本機已有 MySQL 佔用 3306 導致 compose 無法綁定。
-- 解法：修改 `.env` 的 `DB_PORT`（例如改為 3307），重新 `docker compose up -d`。
+### 5.2 智能同步機制
+- **日期同步**：變更開始日期時，結束日期自動同步為相同日期
+- **衝突檢測**：即時檢查並禁用已被預約的時間段
+- **視覺回饋**：已預約時間段以灰色禁用顯示
+- **動態更新**：車位或日期變動時自動重新檢查時間可用性
 
-2) Compose 警告：version 欄位已過時
-- 現象：`the attribute version is obsolete`。
-- 解法：安全可忽略，或移除 `docker-compose.yml` 的 `version` 欄位。
+### 5.3 前端驗證
+- 確保結束時間晚於開始時間
+- 防止選擇已被預約的時間段
+- 當選擇的時間因其他預約而變為不可用時，自動清空選擇
+
+## 6. 管理者系統
+
+### 6.1 身份驗證
+- **JWT Token 驗證**：採用業界標準的 JWT token 進行身份驗證
+- **預設管理員**：系統啟動時自動建立（可透過環境變數設定）
+  - 預設帳號：admin
+  - 預設密碼：admin123（生產環境請務必修改）
+- **自動登出**：Token 過期時自動清除並重導至登入頁面
+
+### 6.2 管理功能
+**車位管理**：
+- 新增車位：輸入車位號碼並設定啟用狀態
+- 編輯車位：修改車位號碼
+- 狀態切換：啟用/停用車位（停用車位不顯示在預約選單）
+- 批量操作：支援多個車位的狀態管理
+
+**預約管理**：
+- 查看所有預約：完整的預約列表與詳細資訊
+- 取消預約：刪除特定預約記錄
+- 過期清理：系統自動清理結束時間超過8小時的預約
+
+### 6.3 權限保護
+- 所有管理功能需要管理員權限 (`is_admin=True`)
+- API 層級的權限檢查 (`Depends(require_admin)`)
+- 前端自動在請求中附加 Authorization header
+
+## 7. 常見問題與除錯指南（本專案實測）
+
+### 7.1 後端問題
+1) **後端啟動失敗**
+- 現象：`NameError: name 'cleanup_expired_reservations' is not defined`
+- 解法：確認 `backend/app/main.py` 中已正確匯入相關函數
+- 檢查：`from .api import router, cleanup_expired_reservations`
+
+2) **資料庫權限問題**
+- 現象：SQLite 資料庫無法寫入
+- 解法：確保容器內 `/app` 目錄有適當的寫入權限
+- 檢查：`docker exec -it rp_backend ls -la /app/`
+
+### 7.2 前端問題
+1) **依賴版本衝突**
+- 現象：npm 建置時 Vite 版本不相容錯誤
+- 解法：檢查 `frontend/package.json` 確保版本匹配
+- 建議：Vite ^6.0.0 配合 @vitejs/plugin-vue@^5.0.0
+
+2) **時間選擇異常**
+- 現象：時間選項無法正常顯示或選擇
+- 解法：檢查瀏覽器時區設定，確認 API 返回的時間格式
 
 3) 後端啟動時出現 bcrypt/passlib 警告
 - 現象：`module 'bcrypt' has no attribute '__about__'`（非致命）。
@@ -140,7 +211,14 @@ curl http://localhost:${BACKEND_PORT:-8000}/health
   docker compose logs backend -f
   ```
 
-5) 前端畫面空白 / Vite 顯示 Syntax error "n"
+5) 前端依賴安裝問題 (npm ci/npm install 錯誤)
+- 現象：執行 `npm ci` 或 `npm install` 時報錯，例如 `EUSAGE` 或找不到 `package-lock.json`。
+- 解法：
+  - 確保在 `frontend/` 目錄下執行 `npm install` 以生成 `package-lock.json`。
+  - 若仍有問題，嘗試先刪除 `frontend/node_modules` 和 `frontend/package-lock.json`，然後重新執行 `npm install`。
+  - 確保 `npm` 版本與專案相容。
+
+6) 前端畫面空白 / Vite 顯示 Syntax error "n"
 - 現象：Vite 日誌顯示 `Failed to scan... Syntax error "n"`，通常是檔案含有字面 `\n` 或非 UTF-8 字元（本案為 `src/auth.js`）。
 - 解法：
   - 重新建立該檔案（例如 `frontend/src/auth.js`），確保無特殊字元。
@@ -151,6 +229,7 @@ curl http://localhost:${BACKEND_PORT:-8000}/health
     docker compose logs -f frontend
     curl http://localhost:5173/src/auth.js
     ```
+
 
 6) 401 自動登出
 - 現象：token 過期或無效時，Axios 會在 401 自動清除 token 並重載頁面。
@@ -165,19 +244,29 @@ curl http://localhost:${BACKEND_PORT:-8000}/health
        -H 'Content-Type: application/x-www-form-urlencoded' \
        -d 'username=admin&password=admin123'
   ```
-- 連入 MySQL 容器檢查：
+- 連入 SQLite 資料庫檢查：
   ```bash
-  docker exec -it rp_mysql mysql -uroot -p${DB_ROOT_PASSWORD} -e "USE ${MYSQL_DATABASE}; SHOW TABLES; SELECT * FROM parking_spots;"
+  # 進入後端容器
+  docker exec -it rp_backend sqlite3 /app/reservation_parking.db
+  
+  # SQLite 指令
+  .tables                    # 列出所有表
+  .schema                    # 顯示表結構  
+  SELECT * FROM parking_spots;    # 查看車位
+  SELECT * FROM reservations;     # 查看預約記錄
+  .quit                      # 退出
   ```
 
-## 7. 開發指令速查
-- 啟動：`docker compose up -d --build`
-- 查看日誌：`docker compose logs -f backend frontend db`
-- 重啟單一服務：`docker compose restart backend`（或 frontend/db）
-- 停止：`docker compose down`
-- 連同資料卷清除：`docker compose down -v`（會刪除資料庫資料）
+## 8. 開發指令速查
+- **啟動**：`docker compose up -d --build`
+- **查看日誌**：`docker compose logs -f backend frontend`
+- **重啟單一服務**：`docker compose restart backend`（或 frontend）
+- **停止**：`docker compose down`
+- **清除資料重啟**：`docker compose down -v && docker compose up -d --build`
+- **健康檢查**：`curl http://localhost:8000/health`
+- **檢查資料庫**：`docker exec -it rp_backend sqlite3 /app/reservation_parking.db`
 
-## 8. 非 Docker 啟動（可選）
+## 9. 非 Docker 啟動（可選）
 - 後端：
   ```bash
   cd backend
@@ -194,5 +283,8 @@ curl http://localhost:${BACKEND_PORT:-8000}/health
   npm run dev
   ```
 
+## 10. 生產環境部署
+詳細的生產環境部署指南（包含 Nginx 反向代理、SSL 憑證、安全設定等）請參考 [DEPLOYMENT.md](./DEPLOYMENT.md)。
+
 ---
-若需新增使用者管理（建立/停用/重設密碼/設為管理者）、Nginx 反代或正式部署指引，請告知我以便擴充文件與程式。
+若需新增使用者管理（建立/停用/重設密碼/設為管理者）等功能，請告知以便擴充程式。

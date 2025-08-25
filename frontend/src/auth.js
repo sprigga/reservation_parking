@@ -1,1 +1,17 @@
-const TOKEN_KEY = 'rp_token'\n\nexport function setToken(token) {\n  localStorage.setItem(TOKEN_KEY, token)\n}\n\nexport function getToken() {\n  return localStorage.getItem(TOKEN_KEY)\n}\n\nexport function clearToken() {\n  localStorage.removeItem(TOKEN_KEY)\n}\n\nexport function isLoggedIn() {\n  return !!getToken()\n}\n
+const TOKEN_KEY = 'rp_token'
+
+export function setToken(token) {
+  localStorage.setItem(TOKEN_KEY, token)
+}
+
+export function getToken() {
+  return localStorage.getItem(TOKEN_KEY)
+}
+
+export function clearToken() {
+  localStorage.removeItem(TOKEN_KEY)
+}
+
+export function isLoggedIn() {
+  return !!getToken()
+}

@@ -8,13 +8,11 @@ load_dotenv()
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    # Example: mysql+pymysql://user:password@localhost:3306/reservation_parking
-    "mysql+pymysql://root:password@localhost:3306/reservation_parking",
+    "sqlite:///./reservation_parking.db",
 )
 
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,
     future=True,
 )
 

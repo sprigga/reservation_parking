@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional
 
 # ---- Users ----
@@ -48,13 +48,11 @@ class ReservationBase(BaseModel):
     start_time: datetime
     end_time: datetime
 
-    @field_validator("end_time")
-    @classmethod
-    def validate_time_order(cls, v: datetime, values):
-        start = values.get("start_time")
-        if start and v <= start:
+    @model_validator(mode="after")
+    def check_time_order(self):
+        if self.end_time <= self.start_time:
             raise ValueError("end_time must be greater than start_time")
-        return v
+        return self
 
 class ReservationCreate(ReservationBase):
     pass
