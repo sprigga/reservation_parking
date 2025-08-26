@@ -14,10 +14,10 @@ router = APIRouter()
 
 # -------- Helper Functions --------
 def cleanup_expired_reservations(db: Session):
-    """清理超過8小時的過期預約紀錄"""
-    cutoff_time = datetime.utcnow() - timedelta(hours=8)
+    """清理超過24小時的過期預約紀錄"""
+    cutoff_time = datetime.utcnow() - timedelta(hours=24)
     
-    # 刪除結束時間超過8小時的預約
+    # 刪除結束時間超過24小時的預約
     result = db.execute(
         delete(models.Reservation).where(models.Reservation.end_time < cutoff_time)
     )
