@@ -1,4 +1,4 @@
-version: "3.8"
+# version: "3.8"
 
 services:
   # 1. Backend API - 使用 SQLite，不需要等待資料庫

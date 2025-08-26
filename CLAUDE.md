@@ -92,13 +92,22 @@ docker compose logs -f rp_backend rp_frontend
 
 ## Environment Configuration
 
+**Environment Switching:**
+```bash
+# Development environment (default)
+cp .env.development .env
+
+# Production environment  
+cp .env.production .env
+```
+
 **Required `.env` variables:**
 ```bash
 SECRET_KEY=change-this-in-production
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=admin123
-CORS_ORIGINS=http://localhost:5173
-VITE_API_BASE=http://localhost:8000
+CORS_ORIGINS=http://localhost:5173        # Development: localhost | Production: 35.212.137.83
+VITE_API_BASE=http://localhost:8000       # Development: localhost | Production: 35.212.137.83
 TZ=Asia/Taipei
 BACKEND_PORT=8000
 FRONTEND_PORT=5173
